@@ -1,9 +1,10 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-from app.memory.mongo import add_to_buffer, get_buffer, clear_buffer
-from app.memory.summarizer import summarize_memories
+from app.db.mongo import add_to_buffer, get_buffer, clear_buffer
+from app.memory.summarizer import summarize_memory
+from app.memory.memory_updater import update_memory
 from app.llm.ollama_client import generate_response
-from app.memory.mongo import (
+from app.db.mongo import (
     create_user_if_not_exists,
     get_user,
     update_preference,
@@ -29,6 +30,12 @@ class ChatRequest(BaseModel):
 
 @app.post("/chat")
 def chat(request: ChatRequest):
+    # --------------------
+    # Memory Summarization
+    # --------------------
+    summarized = summarize_memory(request.message)
+    update_memory(request.user_id, summarized)
+
     # Ensure user exists
     create_user_if_not_exists(request.user_id)
 
@@ -103,20 +110,15 @@ User Message:
     response = generate_response(prompt)
 
     # --------------------
-    # Add message to short-term buffer
+    # Short-term Buffer
+    # --------------------
     add_to_buffer(request.user_id, request.message)
-
     buffer = get_buffer(request.user_id)
 
-# If buffer reaches threshold → summarize
+    # If buffer reaches threshold → summarize
     if len(buffer) >= 5:
-        summary = summarize_memories(buffer)
-
-        store_memory(
-            request.user_id,
-            summary
-        )
-
+        summary = summarize_memory(" ".join(buffer))
+        store_memory(request.user_id, summary)
         clear_buffer(request.user_id)
 
     return {"response": response}

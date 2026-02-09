@@ -8,6 +8,8 @@ db = client["ai_twin_db"]
 users = db.users
 users_collection = db["users"]
 
+memory_collection = db["memories"]
+
 def get_user(user_id: str):
     return users_collection.find_one({"user_id": user_id})
 
