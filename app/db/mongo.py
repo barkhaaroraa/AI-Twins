@@ -1,47 +1,72 @@
 from pymongo import MongoClient
 from datetime import datetime
-import os
+from difflib import SequenceMatcher
+
+# --------------------
+# Database Setup
+# --------------------
 
 client = MongoClient("mongodb://localhost:27017")
-
 db = client["ai_twin_db"]
-users = db.users
-users_collection = db["users"]
 
+users_collection = db["users"]
 memory_collection = db["memories"]
+
+# --------------------
+# Helpers
+# --------------------
+
+def normalize_text(text: str) -> str:
+    return " ".join(text.lower().strip().split())
+
+
+def is_similar(a: str, b: str, threshold: float = 0.75) -> bool:
+    return SequenceMatcher(None, a, b).ratio() >= threshold
+
+
+# --------------------
+# User Management
+# --------------------
 
 def get_user(user_id: str):
     return users_collection.find_one({"user_id": user_id})
 
+
 def create_user_if_not_exists(user_id: str):
-    user = get_user(user_id)
-    if not user:
+    if not get_user(user_id):
         users_collection.insert_one({
             "user_id": user_id,
             "preferences": {},
             "tasks": [],
+            "memory_buffer": [],
             "created_at": datetime.utcnow()
         })
+
+
+# --------------------
+# Preferences
+# --------------------
+
 def update_preference(user_id: str, key: str, value: str):
     users_collection.update_one(
         {"user_id": user_id},
         {"$set": {f"preferences.{key}": value}}
     )
-    
+
 
 def get_preferences(user_id: str):
-    user = users_collection.find_one({"user_id": user_id})
-    if user:
-        return user.get("preferences", {})
-    return {}
+    user = get_user(user_id)
+    return user.get("preferences", {}) if user else {}
 
 
-
+# --------------------
+# Tasks (with merge logic)
+# --------------------
 
 def add_task(user_id: str, task_title: str):
-    task_title = task_title.strip().lower()
+    task_title = normalize_text(task_title)
 
-    users.update_one(
+    users_collection.update_one(
         {
             "user_id": user_id,
             "tasks.title": {"$ne": task_title}
@@ -58,15 +83,27 @@ def add_task(user_id: str, task_title: str):
     )
 
 
+def add_or_merge_task(user_id: str, new_task: str):
+    user = get_user(user_id)
+    if not user:
+        return
+
+    normalized_new = normalize_text(new_task)
+
+    for task in user.get("tasks", []):
+        if is_similar(normalize_text(task["title"]), normalized_new):
+            return  # Same task → ignore duplicate
+
+    add_task(user_id, new_task)
 
 
 def complete_task(user_id: str, title: str):
-    normalized_title = normalize_task_title(title)
+    normalized_title = normalize_text(title)
 
     users_collection.update_one(
         {
             "user_id": user_id,
-            "tasks.normalized_title": normalized_title
+            "tasks.title": normalized_title
         },
         {
             "$set": {
@@ -75,37 +112,53 @@ def complete_task(user_id: str, title: str):
         }
     )
 
-def get_tasks(user_id: str):
-    user = users_collection.find_one({"user_id": user_id})
-    if user:
-        return user.get("tasks", [])
-    return []
 
-def normalize_task_title(title: str) -> str:
-    return " ".join(title.lower().strip().split())
+def get_tasks(user_id: str):
+    user = get_user(user_id)
+    return user.get("tasks", []) if user else []
+
+
+# --------------------
+# Short-term Memory Buffer
+# --------------------
 
 def add_to_buffer(user_id: str, text: str):
     users_collection.update_one(
         {"user_id": user_id},
-        {
-            "$push": {
-                "memory_buffer": text
-            }
-        }
+        {"$push": {"memory_buffer": text}}
     )
 
 
 def get_buffer(user_id: str):
-    user = users_collection.find_one({"user_id": user_id})
-    return user.get("memory_buffer", [])
+    user = get_user(user_id)
+    return user.get("memory_buffer", []) if user else []
 
 
 def clear_buffer(user_id: str):
     users_collection.update_one(
         {"user_id": user_id},
-        {
-            "$set": {
-                "memory_buffer": []
-            }
-        }
+        {"$set": {"memory_buffer": []}}
+    )
+# ... existing code ...
+
+def cleanup_duplicate_tasks(user_id: str):
+    user = get_user(user_id)
+    if not user:
+        return
+
+    unique_tasks = []
+    seen = []
+
+    for task in user.get("tasks", []):
+        title = normalize_text(task["title"])
+
+        if any(is_similar(title, s) for s in seen):
+            continue
+
+        seen.append(title)
+        unique_tasks.append(task)
+
+    users_collection.update_one(
+        {"user_id": user_id},
+        {"$set": {"tasks": unique_tasks}}
     )

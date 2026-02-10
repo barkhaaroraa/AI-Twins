@@ -1,25 +1,25 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-from app.db.mongo import add_to_buffer, get_buffer, clear_buffer
-from app.memory.summarizer import summarize_memory
-from app.memory.memory_updater import update_memory
-from app.llm.ollama_client import generate_response
+
 from app.db.mongo import (
     create_user_if_not_exists,
     get_user,
     update_preference,
-    add_task,
-    complete_task
+    complete_task,
+    add_or_merge_task,
 )
+
+from app.memory.memory_updater import update_memory
+from app.memory.summarizer import summarize_memory
+from app.llm.ollama_client import generate_response
 from app.memory.vector import (
     init_vector_collection,
-    store_memory,
     search_memory
 )
 
 app = FastAPI(title="AI Twin System")
 
-# Initialize Qdrant collection once at startup
+# Initialize Qdrant collection once
 init_vector_collection()
 
 
@@ -28,18 +28,28 @@ class ChatRequest(BaseModel):
     message: str
 
 
+def filter_relevant_memory(memories, threshold=0.75, max_items=2):
+    return [
+        m for m in memories
+        if m["similarity_score"] >= threshold
+    ][:max_items]
+
+
 @app.post("/chat")
 def chat(request: ChatRequest):
     # --------------------
-    # Memory Summarization
-    # --------------------
-    summarized = summarize_memory(request.message)
-    update_memory(request.user_id, summarized)
-
     # Ensure user exists
+    # --------------------
     create_user_if_not_exists(request.user_id)
 
     message_lower = request.message.lower()
+
+    # --------------------
+    # Memory Summarization (LONG-TERM)
+    # --------------------
+    summarized = summarize_memory(request.message)
+    if summarized:
+        update_memory(request.user_id, summarized)
 
     # --------------------
     # Preference Learning
@@ -60,15 +70,15 @@ def chat(request: ChatRequest):
     # Task Memory
     # --------------------
     if "working on" in message_lower:
-        task_title = request.message.lower().split("working on")[-1].strip()
-        add_task(request.user_id, task_title)
+        task_title = message_lower.split("working on")[-1].strip()
+        add_or_merge_task(request.user_id, task_title)
 
     if "completed" in message_lower or "finished" in message_lower:
         task_title = request.message.split(" ")[-1].strip()
         complete_task(request.user_id, task_title)
 
     # --------------------
-    # Fetch Memory
+    # Fetch Persistent Memory
     # --------------------
     user = get_user(request.user_id)
     preferences = user.get("preferences", {})
@@ -79,29 +89,34 @@ def chat(request: ChatRequest):
         request.message
     )
 
+    relevant_memories = filter_relevant_memory(semantic_memories)
+
     # --------------------
-    # Prompt Construction
+    # STRUCTURED PROMPT INJECTION
     # --------------------
+    user_profile_block = []
+    if preferences:
+        user_profile_block.append(f"Preferences: {preferences}")
+    if tasks:
+        user_profile_block.append(
+            "Active Tasks: " + ", ".join(t["title"] for t in tasks)
+        )
+
+    history_block = [
+        m["text"] for m in relevant_memories
+    ]
+
     prompt = f"""
-You are an AI assistant with persistent memory.
+User Profile:
+{chr(10).join(f"- {p}" for p in user_profile_block) or "- None"}
 
-User Preferences:
-{preferences}
-
-Active Tasks:
-{tasks}
-
-Relevant Past Context:
-{semantic_memories}
-
-Instructions:
-- Use past context only if relevant.
-- Do not repeat old information unnecessarily.
-- Consider active tasks when responding.
-- If the user asks for help, relate it to ongoing tasks if relevant.
+Relevant History:
+{chr(10).join(f"- {h}" for h in history_block) or "- None"}
 
 User Message:
-{request.message}
+"{request.message}"
+
+AI Response:
 """.strip()
 
     # --------------------
@@ -110,15 +125,9 @@ User Message:
     response = generate_response(prompt)
 
     # --------------------
-    # Short-term Buffer
+    # RETURN WITH EXPLAINABILITY
     # --------------------
-    add_to_buffer(request.user_id, request.message)
-    buffer = get_buffer(request.user_id)
-
-    # If buffer reaches threshold → summarize
-    if len(buffer) >= 5:
-        summary = summarize_memory(" ".join(buffer))
-        store_memory(request.user_id, summary)
-        clear_buffer(request.user_id)
-
-    return {"response": response}
+    return {
+        "response": response,
+        "memory_used": relevant_memories
+    }

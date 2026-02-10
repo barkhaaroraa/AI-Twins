@@ -29,19 +29,25 @@ def embed_text(text: str):
 
 
 def store_memory(user_id: str, text: str):
+    if not text or not isinstance(text, str):
+        return  # 🔒 DO NOTHING if summary is invalid
+
+    vector = embed_text(text)
+
+    point = {
+        "id": str(uuid.uuid4()),  # always valid UUID
+        "vector": vector,
+        "payload": {
+            "user_id": user_id,
+            "text": text,
+        },
+    }
+
     qdrant.upsert(
         collection_name=COLLECTION_NAME,
-        points=[
-            {
-                "id": str(uuid.uuid4()),  # UUID = always valid
-                "vector": embed_text(text),
-                "payload": {
-                    "user_id": user_id,
-                    "text": text
-                }
-            }
-        ]
+        points=[point]
     )
+
 
 
 def search_memory(user_id: str, query: str, limit: int = 3):
