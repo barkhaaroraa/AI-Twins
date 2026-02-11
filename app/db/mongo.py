@@ -1,6 +1,7 @@
 from pymongo import MongoClient
 from datetime import datetime
 from difflib import SequenceMatcher
+from datetime import datetime, timedelta
 
 # --------------------
 # Database Setup
@@ -162,3 +163,35 @@ def cleanup_duplicate_tasks(user_id: str):
         {"user_id": user_id},
         {"$set": {"tasks": unique_tasks}}
     )
+    
+def get_user_memories(user_id: str):
+    return list(
+        memory_collection.find(
+            {"user_id": user_id},
+            {"_id": 1, "type": 1, "summary": 1, "importance": 1, "created_at": 1}
+        )
+    )
+
+
+def delete_memory(memory_id: str):
+    return memory_collection.delete_one({"_id": memory_id})
+
+
+
+
+
+def decay_memory_importance():
+    one_day_ago = datetime.utcnow() - timedelta(days=1)
+
+    memories = memory_collection.find()
+
+    for m in memories:
+        days_old = (datetime.utcnow() - m["created_at"]).days
+
+        # Reduce importance gradually
+        new_importance = max(0, m["importance"] - (0.01 * days_old))
+
+        memory_collection.update_one(
+            {"_id": m["_id"]},
+            {"$set": {"importance": new_importance}}
+        )

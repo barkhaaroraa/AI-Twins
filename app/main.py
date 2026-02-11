@@ -11,11 +11,19 @@ from app.db.mongo import (
 
 from app.memory.memory_updater import update_memory
 from app.memory.summarizer import summarize_memory
+from fastapi import Header, HTTPException, Depends
+from app.db.mongo import get_user_memories, delete_memory, decay_memory_importance
 from app.llm.ollama_client import generate_response
 from app.memory.vector import (
     init_vector_collection,
     search_memory
 )
+
+API_TOKEN = "supersecrettoken123"
+
+def verify_token(authorization: str = Header(...)):
+    if authorization != f"Bearer {API_TOKEN}":
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 app = FastAPI(title="AI Twin System")
 
@@ -37,6 +45,8 @@ def filter_relevant_memory(memories, threshold=0.75, max_items=2):
 
 @app.post("/chat")
 def chat(request: ChatRequest):
+    decay_memory_importance()
+
     # --------------------
     # Ensure user exists
     # --------------------
@@ -131,3 +141,22 @@ AI Response:
         "response": response,
         "memory_used": relevant_memories
     }
+    
+@app.get("/memory/{user_id}")
+def view_memory(user_id: str, auth: str = Depends(verify_token)):
+    memories = get_user_memories(user_id)
+
+    for m in memories:
+        m["_id"] = str(m["_id"])
+
+    return {"memories": memories}
+
+
+@app.delete("/memory/{memory_id}")
+def remove_memory(memory_id: str, auth: str = Depends(verify_token)):
+    result = delete_memory(memory_id)
+
+    if result.deleted_count == 0:
+        return {"message": "Memory not found"}
+
+    return {"message": "Memory deleted successfully"}
