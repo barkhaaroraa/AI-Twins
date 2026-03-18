@@ -1,6 +1,11 @@
+import os
+import uuid
+
+# Prevent transformers from importing TensorFlow (which can break on some envs)
+os.environ["TRANSFORMERS_NO_TF"] = "1"
+
 from qdrant_client import QdrantClient
 from sentence_transformers import SentenceTransformer
-import uuid
 
 # Embedding model
 embedder = SentenceTransformer("all-MiniLM-L6-v2")
@@ -51,14 +56,24 @@ def store_memory(user_id: str, text: str):
 
 
 def search_memory(user_id: str, query: str, limit: int = 3):
-    results = qdrant.search(
+    results = qdrant.query_points(
         collection_name=COLLECTION_NAME,
-        query_vector=embed_text(query),
+        query=embed_text(query),
         limit=limit
     )
 
-    return [
-        hit.payload["text"]
-        for hit in results
-        if hit.payload and hit.payload.get("user_id") == user_id
-    ]
+    explainable_results = []
+
+    for hit in results.points:
+        if not hit.payload:
+            continue
+        if hit.payload.get("user_id") != user_id:
+            continue
+
+        explainable_results.append({
+            "text": hit.payload.get("text"),
+            "similarity_score": round(hit.score, 3)
+        })
+
+    return explainable_results
+

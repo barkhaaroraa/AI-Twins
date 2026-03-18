@@ -1,0 +1,79 @@
+const historyEl = document.getElementById("history");
+const memoryListEl = document.getElementById("memoryList");
+const chatForm = document.getElementById("chatForm");
+
+function appendMessage(role, text) {
+  const messageEl = document.createElement("div");
+  messageEl.className = `message ${role}`;
+
+  const label = document.createElement("strong");
+  label.textContent = role === "user" ? "You" : "AI Twin";
+
+  const content = document.createElement("div");
+  content.textContent = text;
+
+  messageEl.appendChild(label);
+  messageEl.appendChild(content);
+  historyEl.appendChild(messageEl);
+  historyEl.scrollTop = historyEl.scrollHeight;
+}
+
+function setMemory(memories) {
+  memoryListEl.innerHTML = "";
+
+  if (!memories || memories.length === 0) {
+    memoryListEl.innerHTML =
+      '<p class="placeholder">No stored memory yet. Send a message to add memory.</p>';
+    return;
+  }
+
+  memories.forEach((m) => {
+    const item = document.createElement("div");
+    item.className = "memory__item";
+
+    const headline = document.createElement("div");
+    headline.textContent = m.text;
+
+    const score = document.createElement("span");
+    score.textContent = `similarity: ${m.similarity_score}`;
+
+    item.appendChild(headline);
+    item.appendChild(score);
+    memoryListEl.appendChild(item);
+  });
+}
+
+chatForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+
+  const userId = document.getElementById("userId").value.trim();
+  const message = document.getElementById("message").value.trim();
+
+  if (!userId || !message) {
+    return;
+  }
+
+  appendMessage("user", message);
+  document.getElementById("message").value = "";
+
+  try {
+    const response = await fetch("/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: userId, message }),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      appendMessage("ai", `Error: ${response.status} ${text}`);
+      return;
+    }
+
+    const data = await response.json();
+
+    appendMessage("ai", data.response);
+    setMemory(data.memory_used || []);
+  } catch (err) {
+    appendMessage("ai", `Network error: ${err.message}`);
+  }
+});

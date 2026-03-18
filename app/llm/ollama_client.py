@@ -8,6 +8,6 @@ def generate_response(prompt: str) -> str:
         "stream": False
     }
 
-    response = requests.post(OLLAMA_URL, json=payload)
+    response = requests.post(OLLAMA_URL, json=payload, timeout=30)
     response.raise_for_status()
     return response.json()["response"]

@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Twin</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+
+<body>
+  <div class="app">
+
+    <header class="header">
+      <h1>AI Twin</h1>
+      <p class="subtitle">Chat with your AI Twin and keep long-term memories.</p>
+    </header>
+
+    <main>
+
+      <section class="chat">
+
+        <div class="chat__history" id="history">
+          <div class="placeholder">
+            Send a message to start the conversation.
+          </div>
+        </div>
+
+        <form id="chatForm" class="chat__form">
+
+          <input
+            id="userId"
+            class="input"
+            type="text"
+            placeholder="User ID (e.g. user1)"
+            value="user1"
+            required
+          />
+
+          <textarea
+            id="message"
+            class="textarea"
+            rows="3"
+            placeholder="Write a message to your AI Twin..."
+            required
+          ></textarea>
+
+          <button class="button" type="submit">
+            Send
+          </button>
+
+        </form>
+
+      </section>
+
+
+      <section class="memory">
+
+        <h2>Recent Memory</h2>
+
+        <div id="memoryList" class="memory__list">
+          <p class="placeholder">
+            Send a message to see stored memory.
+          </p>
+        </div>
+
+      </section>
+
+    </main>
+
+    <footer class="footer">
+      <span>
+        Powered by Ollama + FastAPI + Qdrant + MongoDB
+      </span>
+    </footer>
+
+  </div>
+
+  <script src="/static/app.js"></script>
+
+</body>
+</html>
