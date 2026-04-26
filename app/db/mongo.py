@@ -180,6 +180,35 @@ def delete_memory(memory_id: str):
 
 
 
+def get_all_memories_for_user(user_id: str) -> list:
+    return list(memory_collection.find({"user_id": user_id}))
+
+
+def update_memory_confidence(memory_id: str, confidence: float) -> None:
+    memory_collection.update_one(
+        {"_id": memory_id},
+        {"$set": {"confidence": confidence, "last_updated": datetime.utcnow()}},
+    )
+
+
+def mark_memory_superseded(memory_id: str, superseded_by: str) -> None:
+    memory_collection.update_one(
+        {"_id": memory_id},
+        {"$set": {"superseded_by": superseded_by, "last_updated": datetime.utcnow()}},
+    )
+
+
+def update_memory_importance(memory_id: str, importance: float) -> None:
+    memory_collection.update_one(
+        {"_id": memory_id},
+        {"$set": {"importance": importance}},
+    )
+
+
+def get_memory_by_id(memory_id: str):
+    return memory_collection.find_one({"_id": memory_id})
+
+
 def decay_memory_importance():
     one_day_ago = datetime.utcnow() - timedelta(days=1)
 

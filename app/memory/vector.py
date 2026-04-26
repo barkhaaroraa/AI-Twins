@@ -33,33 +33,50 @@ def embed_text(text: str):
     return embedder.encode(text).tolist()
 
 
-def store_memory(user_id: str, text: str):
+def batch_embed(texts: list) -> list:
+    return embedder.encode(texts).tolist()
+
+
+def store_memory(user_id: str, text: str, memory_id: str = None,
+                 memory_type: str = None, entities: list = None,
+                 confidence: float = None, session_id: str = None):
     if not text or not isinstance(text, str):
-        return  # 🔒 DO NOTHING if summary is invalid
+        return None
 
     vector = embed_text(text)
+    point_id = memory_id or str(uuid.uuid4())
+
+    payload = {
+        "user_id": user_id,
+        "text": text,
+    }
+    if memory_type:
+        payload["memory_type"] = memory_type
+    if entities:
+        payload["entities"] = entities
+    if confidence is not None:
+        payload["confidence"] = confidence
+    if session_id:
+        payload["session_id"] = session_id
 
     point = {
-        "id": str(uuid.uuid4()),  # always valid UUID
+        "id": point_id,
         "vector": vector,
-        "payload": {
-            "user_id": user_id,
-            "text": text,
-        },
+        "payload": payload,
     }
 
     qdrant.upsert(
         collection_name=COLLECTION_NAME,
         points=[point]
     )
+    return vector
 
 
-
-def search_memory(user_id: str, query: str, limit: int = 3):
+def search_memory(user_id: str, query: str, limit: int = 5):
     results = qdrant.query_points(
         collection_name=COLLECTION_NAME,
         query=embed_text(query),
-        limit=limit
+        limit=limit * 3,
     )
 
     explainable_results = []
@@ -71,9 +88,46 @@ def search_memory(user_id: str, query: str, limit: int = 3):
             continue
 
         explainable_results.append({
+            "memory_id": hit.id,
             "text": hit.payload.get("text"),
-            "similarity_score": round(hit.score, 3)
+            "similarity_score": round(hit.score, 3),
+            "memory_type": hit.payload.get("memory_type", "Semantic"),
+            "entities": hit.payload.get("entities", []),
         })
 
+        if len(explainable_results) >= limit:
+            break
+
     return explainable_results
+
+
+def search_memory_with_filter(user_id: str, query: str,
+                              memory_types: list = None, limit: int = 10):
+    results = qdrant.query_points(
+        collection_name=COLLECTION_NAME,
+        query=embed_text(query),
+        limit=limit * 3,
+    )
+
+    filtered = []
+    for hit in results.points:
+        if not hit.payload:
+            continue
+        if hit.payload.get("user_id") != user_id:
+            continue
+        if memory_types and hit.payload.get("memory_type") not in memory_types:
+            continue
+
+        filtered.append({
+            "memory_id": hit.id,
+            "text": hit.payload.get("text"),
+            "similarity_score": round(hit.score, 3),
+            "memory_type": hit.payload.get("memory_type", "Semantic"),
+            "entities": hit.payload.get("entities", []),
+        })
+
+        if len(filtered) >= limit:
+            break
+
+    return filtered
 

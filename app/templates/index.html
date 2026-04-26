@@ -3,74 +3,115 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AI Twin</title>
+  <title>AI Twin - Cognitive Memory Engine</title>
   <link rel="stylesheet" href="/static/style.css" />
+  <script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
 </head>
 
 <body>
   <div class="app">
 
     <header class="header">
-      <h1>AI Twin</h1>
-      <p class="subtitle">Chat with your AI Twin and keep long-term memories.</p>
+      <h1>AI Twin <span class="header__badge">Cognitive Memory Engine</span></h1>
+      <p class="subtitle">Graph-based memory with intent-aware extraction, hybrid retrieval, and memory evolution.</p>
     </header>
+
+    <!-- Tab Navigation -->
+    <nav class="tabs">
+      <button class="tab active" data-tab="chat">Chat</button>
+      <button class="tab" data-tab="graph">Graph</button>
+      <button class="tab" data-tab="timeline">Timeline</button>
+      <button class="tab" data-tab="consolidation">Consolidation</button>
+    </nav>
 
     <main>
 
-      <section class="chat">
-
-        <div class="chat__history" id="history">
-          <div class="placeholder">
-            Send a message to start the conversation.
+      <!-- ===================== CHAT TAB ===================== -->
+      <div class="tab-content active" id="tab-chat">
+        <section class="panel panel--left">
+          <div class="chat__history" id="history">
+            <div class="placeholder">Send a message to start the conversation.</div>
           </div>
-        </div>
+          <form id="chatForm" class="chat__form">
+            <input id="userId" class="input" type="text"
+                   placeholder="User ID (e.g. user1)" value="user1" required />
+            <textarea id="message" class="textarea" rows="3"
+                      placeholder="Write a message to your AI Twin..." required></textarea>
+            <button class="button" type="submit">Send</button>
+          </form>
+        </section>
 
-        <form id="chatForm" class="chat__form">
+        <section class="panel panel--right">
+          <h3 class="panel__title">Retrieval Trace</h3>
+          <div id="retrievalTrace" class="trace">
+            <p class="placeholder">Send a message to see retrieval trace.</p>
+          </div>
+          <h3 class="panel__title" style="margin-top:1rem">Memory Updates</h3>
+          <div id="memoryUpdates" class="trace">
+            <p class="placeholder">No updates yet.</p>
+          </div>
+        </section>
+      </div>
 
-          <input
-            id="userId"
-            class="input"
-            type="text"
-            placeholder="User ID (e.g. user1)"
-            value="user1"
-            required
-          />
+      <!-- ===================== GRAPH TAB ===================== -->
+      <div class="tab-content" id="tab-graph">
+        <section class="panel panel--left">
+          <div id="graphContainer" class="graph-container"></div>
+        </section>
+        <section class="panel panel--right">
+          <h3 class="panel__title">Memory Inspector</h3>
+          <div id="inspector" class="inspector">
+            <p class="placeholder">Click a node in the graph to inspect it.</p>
+          </div>
+        </section>
+      </div>
 
-          <textarea
-            id="message"
-            class="textarea"
-            rows="3"
-            placeholder="Write a message to your AI Twin..."
-            required
-          ></textarea>
+      <!-- ===================== TIMELINE TAB ===================== -->
+      <div class="tab-content" id="tab-timeline">
+        <section class="panel panel--left">
+          <div class="filter-bar">
+            <button class="filter-btn active" data-filter="all">All</button>
+            <button class="filter-btn" data-filter="Semantic">Semantic</button>
+            <button class="filter-btn" data-filter="Episodic">Episodic</button>
+            <button class="filter-btn" data-filter="Procedural">Procedural</button>
+            <button class="filter-btn" data-filter="Preference">Preference</button>
+          </div>
+          <div id="timelineContainer" class="timeline-container">
+            <p class="placeholder">No sessions yet.</p>
+          </div>
+        </section>
+        <section class="panel panel--right">
+          <h3 class="panel__title">Session Detail</h3>
+          <div id="sessionDetail" class="inspector">
+            <p class="placeholder">Click a session to see details.</p>
+          </div>
+        </section>
+      </div>
 
-          <button class="button" type="submit">
-            Send
+      <!-- ===================== CONSOLIDATION TAB ===================== -->
+      <div class="tab-content" id="tab-consolidation">
+        <section class="panel panel--left">
+          <div id="consolidationView" class="consolidation-view">
+            <p class="placeholder">Run consolidation to see clusters and summaries.</p>
+          </div>
+        </section>
+        <section class="panel panel--right">
+          <h3 class="panel__title">Topics</h3>
+          <div id="topicsView" class="topics-view">
+            <p class="placeholder">No topics extracted yet.</p>
+          </div>
+          <button class="button button--sm" id="runConsolidation" style="margin-top:1rem">
+            Run Consolidation
           </button>
-
-        </form>
-
-      </section>
-
-
-      <section class="memory">
-
-        <h2>Recent Memory</h2>
-
-        <div id="memoryList" class="memory__list">
-          <p class="placeholder">
-            Send a message to see stored memory.
-          </p>
-        </div>
-
-      </section>
+          <div id="consolidationStats" class="stats-box" style="margin-top:1rem"></div>
+        </section>
+      </div>
 
     </main>
 
-    <footer class="footer">
-      <span>
-        Powered by Ollama + FastAPI + Qdrant + MongoDB
-      </span>
+    <footer class="footer" id="statsBar">
+      <span>Powered by Ollama + FastAPI + Qdrant + MongoDB + NetworkX</span>
+      <span id="statsInfo"></span>
     </footer>
 
   </div>

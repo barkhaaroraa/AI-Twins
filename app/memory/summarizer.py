@@ -1,123 +1,193 @@
-from typing import Optional, Dict
-from app.llm.ollama_client import generate_response
-import json
+import re
+from typing import Optional, Dict, List
+from app.llm.ollama_client import generate_json
 
 
-MAX_SUMMARY_LENGTH = 120
+MAX_SUMMARY_LENGTH = 200
+
+# Intent -> (memory_type, default_importance)
+INTENT_DEFAULTS = {
+    "task": ("Procedural", 0.9),
+    "preference": ("Preference", 0.8),
+    "fact": ("Semantic", 0.7),
+    "correction": ("Semantic", 0.95),
+    "goal": ("Procedural", 0.85),
+    "contextual_reference": ("Episodic", 0.6),
+}
+
+# Rule-based intent patterns
+INTENT_PATTERNS = {
+    "correction": re.compile(
+        r"\b(actually|no,|that'?s wrong|i meant|correction|not .+, but)\b", re.I
+    ),
+    "goal": re.compile(
+        r"\b(i want to|my goal|planning to|aiming to|hope to|going to)\b", re.I
+    ),
+    "task": re.compile(
+        r"\b(working on|building|developing|implementing|need to|todo|creating)\b", re.I
+    ),
+    "preference": re.compile(
+        r"\b(i prefer|i like|i want|i enjoy|favou?rite|i love)\b", re.I
+    ),
+    "fact": re.compile(
+        r"\b(i am a|i'm a|i have|i know|i studied|my .+ is|i work at|i live)\b", re.I
+    ),
+    "contextual_reference": re.compile(
+        r"\b(last time|earlier|before|continue|as i said|remember when)\b", re.I
+    ),
+}
 
 
-def summarize_memory(user_message: str):
+def summarize_memory(user_message: str) -> Optional[Dict]:
     """
-    Hybrid memory summarizer:
-    1. Try LLM-based summarization
-    2. Fallback to rule-based summarization
+    Intent-aware memory extraction pipeline.
+    1. Try LLM-based structured extraction
+    2. Fallback to rule-based extraction
     """
+    llm_result = _llm_extract(user_message)
+    if llm_result:
+        return llm_result
 
-    # 1️⃣ Try LLM-based memory extraction
-    llm_memory = llm_summarize_memory(user_message)
-    if llm_memory:
-        return llm_memory
+    return _rule_based_extract(user_message)
 
-    # 2️⃣ Fallback to rule-based logic
-    message = user_message.lower().strip()
 
-    if "i prefer" in message or "i like" in message:
-        return build_memory("preference", extract_preference(user_message), 0.8)
+# ------------------------------------------------------------------
+# LLM-based extraction
+# ------------------------------------------------------------------
 
-    if "i am working on" in message or "working on" in message:
-        return build_memory("task", extract_task(user_message), 0.9)
+EXTRACTION_PROMPT = """You are an advanced memory extraction system for an AI Twin.
+Analyze the user message and extract structured memory worth remembering long-term.
 
-    if "don't" in message or "do not" in message:
-        return build_memory("constraint", extract_constraint(user_message), 0.7)
+ONLY output valid JSON. DO NOT explain anything.
 
-    if "i am a" in message or "i'm a" in message:
-        return build_memory("background", extract_background(user_message), 0.6)
+Schema:
+{{
+  "store": true or false,
+  "intent": "task | preference | fact | correction | goal | contextual_reference",
+  "memory_type": "Semantic | Episodic | Procedural | Preference",
+  "summary": "abstracted memory in <= 30 words",
+  "entities": ["entity1", "entity2"],
+  "relationships": [{{"subject": "...", "predicate": "...", "object": "..."}}],
+  "confidence": 0.0 to 1.0,
+  "importance": 0.0 to 1.0
+}}
+
+Rules:
+- Do NOT store raw conversation or greetings
+- Do NOT store questions unless they reveal intent
+- Store stable user facts, preferences, tasks, goals, corrections
+- Extract ALL named entities (tools, languages, projects, people, topics)
+- If nothing is worth storing, set store=false
+
+User message:
+\"\"\"{message}\"\"\"
+"""
+
+
+def _llm_extract(user_message: str) -> Optional[Dict]:
+    try:
+        result = generate_json(EXTRACTION_PROMPT.format(message=user_message))
+
+        if not result.get("store"):
+            return None
+
+        intent = result.get("intent", "fact")
+        default_type, default_imp = INTENT_DEFAULTS.get(intent, ("Semantic", 0.7))
+
+        summary = (result.get("summary") or "").strip()
+        if not summary:
+            return None
+        if len(summary) > MAX_SUMMARY_LENGTH:
+            summary = summary[:MAX_SUMMARY_LENGTH] + "..."
+
+        return {
+            "type": intent,
+            "intent": intent,
+            "memory_type": result.get("memory_type", default_type),
+            "summary": summary,
+            "entities": result.get("entities", []),
+            "relationships": result.get("relationships", []),
+            "confidence": float(result.get("confidence", 0.8)),
+            "importance": float(result.get("importance", default_imp)),
+        }
+    except Exception:
+        return None
+
+
+# ------------------------------------------------------------------
+# Rule-based fallback
+# ------------------------------------------------------------------
+
+def _rule_based_extract(user_message: str) -> Optional[Dict]:
+    message_lower = user_message.lower().strip()
+
+    for intent, pattern in INTENT_PATTERNS.items():
+        if pattern.search(message_lower):
+            default_type, default_imp = INTENT_DEFAULTS[intent]
+            summary = _clean_summary(user_message, intent)
+            if not summary:
+                continue
+            entities = _extract_entities(user_message)
+            return {
+                "type": intent,
+                "intent": intent,
+                "memory_type": default_type,
+                "summary": summary[:MAX_SUMMARY_LENGTH],
+                "entities": entities,
+                "relationships": [],
+                "confidence": 0.6,
+                "importance": default_imp,
+            }
 
     return None
 
 
-
-# -------------------------------
-# Helper functions (internal use)
-# -------------------------------
-
-def build_memory(mem_type: str, summary: str, importance: float) -> Optional[Dict]:
-    if not summary:
-        return None
-
-    summary = summary.strip()
-
-    if len(summary) > MAX_SUMMARY_LENGTH:
-        summary = summary[:MAX_SUMMARY_LENGTH] + "..."
-
-    return {
-        "type": mem_type,
-        "summary": summary,
-        "importance": importance
+def _clean_summary(text: str, intent: str) -> str:
+    """Strip common prefixes to get a cleaner summary."""
+    removals = {
+        "task": ["I am working on", "I'm working on", "working on"],
+        "preference": ["I prefer", "i prefer", "I like", "i like"],
+        "fact": ["I am a", "I'm a"],
+        "correction": ["Actually,", "actually,", "No,", "no,"],
+        "goal": ["I want to", "i want to", "My goal is to", "I'm planning to"],
+        "contextual_reference": [],
     }
+    result = text
+    for prefix in removals.get(intent, []):
+        if result.lower().startswith(prefix.lower()):
+            result = result[len(prefix):].strip()
+            break
+    return result.strip()
 
 
-def extract_preference(text: str) -> str:
-    return text.replace("I prefer", "").replace("i prefer", "").strip()
+def _extract_entities(text: str) -> List[str]:
+    """Simple entity extraction: capitalized words, quoted strings, technical terms."""
+    entities = set()
 
+    # Quoted strings
+    for match in re.finditer(r'"([^"]+)"', text):
+        entities.add(match.group(1))
+    for match in re.finditer(r"'([^']+)'", text):
+        entities.add(match.group(1))
 
-def extract_task(text: str) -> str:
-    return text.replace("I am working on", "").replace("I'm working on", "").strip()
+    # Capitalized multi-word names (e.g. "Machine Learning", "FastAPI")
+    for match in re.finditer(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b", text):
+        word = match.group(1)
+        # Skip sentence-starting words by checking position
+        if match.start() > 0 and text[match.start() - 1] not in ".!?\n":
+            entities.add(word)
 
+    # Technical terms (camelCase, PascalCase, contains digits/special)
+    for match in re.finditer(r"\b([A-Za-z]+[A-Z][a-z]+[A-Za-z]*)\b", text):
+        entities.add(match.group(1))
 
-def extract_constraint(text: str) -> str:
-    return text.replace("I don't", "").replace("I do not", "").strip()
+    # Known tech patterns
+    for match in re.finditer(
+        r"\b(Python|JavaScript|TypeScript|Rust|Go|Java|C\+\+|React|Vue|Angular|"
+        r"FastAPI|Django|Flask|Node\.?js|PyTorch|TensorFlow|MongoDB|PostgreSQL|"
+        r"Docker|Kubernetes|AWS|GCP|Azure|Redis|GraphQL|REST)\b",
+        text, re.I,
+    ):
+        entities.add(match.group(1))
 
-
-def extract_background(text: str) -> str:
-    return text.replace("I am a", "").replace("I'm a", "").strip()
-
-def llm_summarize_memory(user_message: str) -> dict | None:
-    """
-    Uses LLM to decide whether the message should be stored as long-term memory.
-    Returns structured memory or None.
-    """
-
-    prompt = f"""
-You are a memory extraction system for an AI Twin.
-
-Your job is to decide whether the user's message reveals
-long-term information worth remembering.
-
-ONLY output valid JSON.
-DO NOT explain anything.
-
-Memory schema:
-{{
-  "store": true or false,
-  "type": "preference | task | constraint | background | none",
-  "summary": "abstracted memory in <= 20 words",
-  "importance": number between 0.0 and 1.0
-}}
-
-Rules:
-- Do NOT store raw conversation
-- Do NOT store questions
-- Store only stable user facts
-- If nothing is worth storing, set store=false
-
-User message:
-\"\"\"{user_message}\"\"\"
-"""
-
-    try:
-        response = generate_response(prompt)
-        memory = json.loads(response)
-
-        if not memory.get("store"):
-            return None
-
-        return {
-            "type": memory["type"],
-            "summary": memory["summary"],
-            "importance": float(memory["importance"])
-        }
-
-    except Exception as e:
-        # Fallback safety
-        return None
+    return list(entities)
