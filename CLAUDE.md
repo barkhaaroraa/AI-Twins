@@ -4,64 +4,86 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-AI Twins is a FastAPI-based "AI Twin" system that learns user preferences, tracks tasks, and maintains long-term memory to personalize LLM responses. It uses Ollama for local LLM inference, MongoDB for persistent storage, and Qdrant for semantic vector search.
+AI Twins is a FastAPI-based **agentic memory** system. Multiple specialized agents (logger, nutritionist, trainer) share **one** memory pool keyed by `user_id` — anything one agent writes, the others can read on retrieval. Memory is summarized by an LLM, stored in MongoDB (structured) + Qdrant (vector), and pulled back via cosine similarity into the next agent's prompt.
+
+There is no UI and no generic `/chat` endpoint — the only entry points are the agent endpoints.
 
 ## Running the Application
 
 ```bash
-# Install dependencies
 pip install -r requirements.txt
 
 # Required services (must be running):
 # - MongoDB on localhost:27017
 # - Qdrant on localhost:6333
-# - Ollama with a model configured via .env
+# - Ollama on localhost:11434 with the model from .env pulled
 
-# Start the server
 uvicorn app.main:app --reload
 ```
 
+In this dev environment the three services run as Docker containers `ai_twin_mongo`, `ai_twin_qdrant`, `ai_twin_ollama` — start them with `docker start ai_twin_mongo ai_twin_qdrant ai_twin_ollama`.
+
 ## Environment Variables
 
-Configured via `.env` file (loaded by `app/config.py`):
-- `OLLAMA_URL` - Ollama API endpoint
-- `OLLAMA_MODEL` - Model name for Ollama
-- `APP_NAME` - Application name
+`.env` (loaded by `app/config.py`):
+- `OLLAMA_URL` — Ollama generate endpoint (e.g. `http://localhost:11434/api/generate`)
+- `OLLAMA_MODEL` — Ollama model name (e.g. `llama3.2:1b`)
+- `APP_NAME`
+
+## Endpoints
+
+- `GET /agents` — list registered agents (name + first-line role)
+- `POST /agent/{agent_name}` — body `{"user_id": "...", "message": "..."}`. Runs the full pipeline as that agent.
+- `GET /api/agent-memories/{user_id}` — newest-first list of stored memories (no embeddings) for the shared pool.
+
+No auth.
 
 ## Architecture
 
-### Request Flow
+### Request flow (`POST /agent/{agent_name}`)
 
-1. **`app/main.py`** - FastAPI app with `/chat` (POST) and `/memory` (GET/DELETE) endpoints. The `/chat` endpoint orchestrates the full pipeline: decay old memories, extract/store new memories, fetch context, build prompt, generate response.
+1. `app/main.py` looks the agent up in `AGENTS` and delegates to `TwinOrchestrator.process_agent_message`.
+2. `twin/orchestrator.py`:
+   - ensures the user exists in Mongo,
+   - runs `search_memory` (Qdrant cosine similarity, top 4) for the message,
+   - builds the prompt via `PromptBuilder` with the agent's `role_prompt` prepended,
+   - calls Ollama (`generate_response`) — synchronous, blocks the response,
+   - kicks off a daemon thread to summarize + store the user message (LLM extraction with rule-based fallback),
+   - returns `{response, memory_used, agent}`.
+3. Background thread (`_store_memory`):
+   - `summarize_memory` (LLM JSON extraction → rule-based regex fallback). If both fail and the agent has `force_store=True`, falls back to `fast_store_payload` (no-LLM payload with heuristic entity extraction).
+   - `update_memory` dual-writes to Mongo `memories` and Qdrant `user_memory`.
 
-2. **Memory Pipeline** (on each `/chat` request):
-   - `app/memory/summarizer.py` - Attempts LLM-based memory extraction first (asks the LLM to output structured JSON), falls back to rule-based keyword matching (e.g., "I prefer", "working on")
-   - `app/memory/memory_updater.py` - Dual-writes extracted memories to both MongoDB (structured doc) and Qdrant (vector embedding)
-   - `app/memory/vector.py` - Manages Qdrant vector store using `all-MiniLM-L6-v2` embeddings (384 dimensions). Handles `store_memory` and `search_memory`
+### Agents (`app/agents/__init__.py`)
 
-3. **`app/db/mongo.py`** - MongoDB operations: user CRUD, preferences, tasks (with fuzzy dedup via `SequenceMatcher`), memory buffer, and memory importance decay
+`AgentSpec(name, role_prompt, force_store)`. Three are registered:
+- `logger` — `force_store=True`, every user message becomes a memory.
+- `nutritionist` — only LLM-judged "worth storing" messages persist.
+- `trainer` — same.
 
-4. **`app/llm/ollama_client.py`** - Thin wrapper around Ollama's `/api/generate` endpoint (non-streaming)
+Add an agent by appending an `AgentSpec` to the `AGENTS` dict.
 
-5. **`app/static/` + `app/templates/`** - Simple chat UI served at `/`
+### Data stores
 
-### Data Stores
+- **MongoDB `ai_twin_db`**:
+  - `users` — `{user_id, created_at}`. Minimal; no preferences/tasks.
+  - `memories` — `{_id, user_id, type, intent, memory_type, summary, entities, relationships, confidence, importance, embedding, source_agent, created_at}`.
+- **Qdrant `user_memory`** — 384-dim `all-MiniLM-L6-v2` embeddings, payload carries `user_id`, `text`, `memory_type`, `entities`, `confidence`. The `user_id` is filtered post-query (no Qdrant payload index).
 
-- **MongoDB (`ai_twin_db`)**: `users` collection (preferences, tasks, memory buffer) and `memories` collection (summarized memories with importance scores)
-- **Qdrant (`user_memory`)**: Vector embeddings of memory summaries for semantic retrieval
+### Memory extraction (`app/memory/summarizer.py`)
 
-### Key Design Patterns
+`summarize_memory(message)` tries `_llm_extract` (Ollama JSON) first; on parse failure or `store=false` it falls back to `_rule_based_extract` (regex against `task | preference | fact | correction | goal | contextual_reference`). Each intent maps to a `(memory_type, default_importance)` pair via `INTENT_DEFAULTS`. `fast_store_payload` is the LLM-free fast path used only by `force_store` agents when both extractors fail.
 
-- Memory retrieval uses cosine similarity with a 0.75 threshold and max 2 results (`filter_relevant_memory` in main.py)
-- Memory importance decays by 0.01 per day since creation (`decay_memory_importance`)
-- Structured prompt injection: user profile (preferences + tasks) and relevant history are injected into the LLM prompt
-- Response includes `memory_used` for explainability
+### Prompt construction (`twin/prompt_builder.py`)
 
-### Auth
-
-The `/memory` endpoints require a Bearer token via `Authorization` header. The token is hardcoded in `app/main.py` as `API_TOKEN`. The `/chat` endpoint has no auth.
+`{agent_role}\n\nRelevant Memories:\n- [type, score=…] text…\n\nUser Message:\n"…"\n\nAI Response:`. Memories are grouped by `memory_type` to give the LLM a hint at hierarchy.
 
 ## Directories
 
-- `app/` - Main application (FastAPI server, DB, memory pipeline, LLM client, UI)
-- `twin/` - Contains `orchestrator.py` and `prompt_builder.py` (currently empty files)
+- `app/main.py` — FastAPI app, 3 routes
+- `app/agents/` — `AgentSpec` definitions; the only place to register a new agent
+- `app/memory/` — `summarizer.py`, `memory_updater.py`, `vector.py`
+- `app/db/mongo.py` — minimal users + memories CRUD
+- `app/llm/ollama_client.py` — Ollama wrapper with `OllamaUnavailable` exception
+- `twin/orchestrator.py` — pipeline glue
+- `twin/prompt_builder.py` — prompt assembly
