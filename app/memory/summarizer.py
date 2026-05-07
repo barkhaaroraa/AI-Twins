@@ -51,6 +51,33 @@ def summarize_memory(user_message: str) -> Optional[Dict]:
     return _rule_based_extract(user_message)
 
 
+def fast_store_payload(
+    user_message: str,
+    memory_type: str = "Semantic",
+    intent: str = "fact",
+    importance: float = 0.5,
+) -> Dict:
+    """Cheap, deterministic memory payload built without an LLM call.
+
+    Used when the ML router decides a message is worth storing but we don't
+    want to pay the latency / availability cost of LLM extraction. Entities
+    are still pulled out heuristically so the graph can auto-link.
+    """
+    summary = (user_message or "").strip()
+    if len(summary) > MAX_SUMMARY_LENGTH:
+        summary = summary[:MAX_SUMMARY_LENGTH] + "..."
+    return {
+        "type": intent,
+        "intent": intent,
+        "memory_type": memory_type,
+        "summary": summary,
+        "entities": _extract_entities(user_message),
+        "relationships": [],
+        "confidence": 0.6,
+        "importance": importance,
+    }
+
+
 # ------------------------------------------------------------------
 # LLM-based extraction
 # ------------------------------------------------------------------

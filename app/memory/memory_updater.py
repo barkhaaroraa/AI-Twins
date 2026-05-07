@@ -11,6 +11,7 @@ def update_memory(
     summarized_memory: Optional[Dict],
     session_id: str = None,
     memory_graph=None,
+    source_agent: Optional[str] = None,
 ) -> Optional[Dict]:
 
     if summarized_memory is None:
@@ -33,6 +34,7 @@ def update_memory(
         "original_importance": summarized_memory.get("importance", 0.5),
         "embedding": embedding,
         "session_id": session_id,
+        "source_agent": source_agent,
         "is_consolidated": False,
         "superseded_by": None,
         "created_at": datetime.utcnow(),

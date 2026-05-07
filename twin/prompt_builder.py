@@ -1,4 +1,4 @@
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
 class PromptBuilder:
@@ -7,8 +7,13 @@ class PromptBuilder:
         user_profile: dict,
         retrieved_memories: List[dict],
         message: str,
+        agent_role: Optional[str] = None,
     ) -> str:
         sections = []
+
+        if agent_role:
+            sections.append(agent_role.strip())
+            sections.append("")
 
         # User profile
         profile_lines = []

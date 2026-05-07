@@ -4,12 +4,16 @@ from typing import Dict, List, Optional
 import numpy as np
 
 from app.config import W_SEMANTIC, W_GRAPH, W_RECENCY, W_IMPORTANCE
-from app.llm.ollama_client import generate_json
 from app.memory.vector import search_memory_with_filter
 from app.memory.cache import MemoryCache
 
+ALL_TYPES = ["Semantic", "Episodic", "Procedural", "Preference"]
+
 
 class HybridRetriever:
+    """Hybrid retriever combining semantic search, graph expansion, recency,
+    and importance. Intent routing happens upstream in the ML classifier."""
+
     def __init__(self, memory_graph, episodic):
         self.memory_graph = memory_graph
         self.episodic = episodic
@@ -19,75 +23,38 @@ class HybridRetriever:
         self.w_importance = W_IMPORTANCE
         self.cache = MemoryCache()
 
-    # ------------------------------------------------------------------
-    # Intent classification
-    # ------------------------------------------------------------------
-
-    def classify_query_intent(self, query: str) -> dict:
-        prompt = f"""Classify the intent of this user message for memory retrieval.
-ONLY output valid JSON:
-{{
-  "intent": "question | continuation | recall | correction | exploration",
-  "relevant_memory_types": ["Semantic", "Episodic", "Procedural", "Preference"],
-  "temporal_hint": "recent | last_session | specific_date | null"
-}}
-
-User message: "{query}"
-"""
-        try:
-            result = generate_json(prompt)
-            return {
-                "intent": result.get("intent", "question"),
-                "relevant_memory_types": result.get(
-                    "relevant_memory_types",
-                    ["Semantic", "Episodic", "Procedural", "Preference"],
-                ),
-                "temporal_hint": result.get("temporal_hint"),
-            }
-        except Exception:
-            return {
-                "intent": "question",
-                "relevant_memory_types": ["Semantic", "Episodic", "Procedural", "Preference"],
-                "temporal_hint": None,
-            }
-
-    # ------------------------------------------------------------------
-    # Retrieval pipeline
-    # ------------------------------------------------------------------
-
-    def retrieve(self, user_id: str, query: str, limit: int = 5) -> dict:
-        # Check cache
+    def retrieve(
+        self,
+        user_id: str,
+        query: str,
+        limit: int = 5,
+        memory_types: Optional[List[str]] = None,
+    ) -> dict:
         cache_key = f"{user_id}:{query}"
         cached = self.cache.get(cache_key)
         if cached:
             return cached
 
-        # Step 1: Classify query intent
-        query_intent = self.classify_query_intent(query)
+        types = memory_types or ALL_TYPES
+        query_intent = {"intent": "ml-routed", "relevant_memory_types": types}
 
-        # Step 2: Semantic search (broader pool)
+        # Step 1: Semantic search
         semantic_results = search_memory_with_filter(
-            user_id, query,
-            memory_types=query_intent["relevant_memory_types"],
-            limit=10,
+            user_id, query, memory_types=types, limit=10
         )
 
         if not semantic_results:
-            result = {
-                "query_intent": query_intent,
-                "results": [],
-            }
+            result = {"query_intent": query_intent, "results": []}
             self.cache.put(cache_key, result)
             return result
 
-        # Step 3: Graph expansion — BFS from top semantic seeds
+        # Step 2: Graph expansion — BFS from top semantic seeds
         seed_ids = [r["memory_id"] for r in semantic_results[:5] if r.get("memory_id")]
         graph_neighbors = set()
         for seed in seed_ids:
-            neighbors = self.memory_graph.bfs_neighbors(seed, max_hops=2)
-            graph_neighbors.update(neighbors)
+            graph_neighbors.update(self.memory_graph.bfs_neighbors(seed, max_hops=2))
 
-        # Step 4: Personalized PageRank
+        # Step 3: Personalized PageRank
         pagerank_scores = self.memory_graph.personalized_pagerank(seed_ids)
 
         # Collect all candidate IDs

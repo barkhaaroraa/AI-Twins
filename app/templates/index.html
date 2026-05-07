@@ -22,6 +22,7 @@
       <button class="tab" data-tab="graph">Graph</button>
       <button class="tab" data-tab="timeline">Timeline</button>
       <button class="tab" data-tab="consolidation">Consolidation</button>
+      <button class="tab" data-tab="agents">Agents</button>
     </nav>
 
     <main>
@@ -84,6 +85,90 @@
           <h3 class="panel__title">Session Detail</h3>
           <div id="sessionDetail" class="inspector">
             <p class="placeholder">Click a session to see details.</p>
+          </div>
+        </section>
+      </div>
+
+      <!-- ===================== AGENTS TAB ===================== -->
+      <div class="tab-content" id="tab-agents">
+        <div class="agents-bar">
+          <div class="agents-bar__left">
+            <label class="agents-bar__label">Shared user&nbsp;ID</label>
+            <input id="agentsUserId" class="input input--inline" type="text" value="demo_health" />
+            <button class="button button--ghost" id="agentsRefresh" title="Reload shared memory">↻ Refresh</button>
+            <button class="button button--ghost button--danger" id="agentsResetMemory" title="Switch to a fresh user_id to compare empty vs. populated memory">New empty user</button>
+          </div>
+          <div class="agents-bar__hint">
+            All three agents share <strong>one</strong> memory pool keyed by user&nbsp;ID. Anything one agent writes, the others can read.
+          </div>
+        </div>
+
+        <div class="agents-grid">
+          <!-- Logger -->
+          <section class="agent-card agent-card--logger" data-agent="logger">
+            <header class="agent-card__head">
+              <span class="agent-card__icon">📝</span>
+              <div>
+                <h3 class="agent-card__name">Logger</h3>
+                <p class="agent-card__role">Records workouts, meals, sleep, symptoms.</p>
+              </div>
+              <span class="agent-card__badge" id="memCount-logger">0</span>
+            </header>
+            <div class="agent-card__chat" id="chat-logger">
+              <p class="placeholder agent-card__hint">Try: <em>"Did a 5km run, 28 min. Right knee twingy at km 4."</em></p>
+            </div>
+            <form class="agent-card__form" data-agent="logger">
+              <textarea class="textarea agent-card__input" rows="2" placeholder="Log a fact..."></textarea>
+              <button class="button button--sm" type="submit">Log</button>
+            </form>
+          </section>
+
+          <!-- Nutritionist -->
+          <section class="agent-card agent-card--nutritionist" data-agent="nutritionist">
+            <header class="agent-card__head">
+              <span class="agent-card__icon">🥗</span>
+              <div>
+                <h3 class="agent-card__name">Nutritionist</h3>
+                <p class="agent-card__role">Meal & food guidance grounded in your history.</p>
+              </div>
+              <span class="agent-card__badge" id="memCount-nutritionist">0</span>
+            </header>
+            <div class="agent-card__chat" id="chat-nutritionist">
+              <p class="placeholder agent-card__hint">Try: <em>"What should I eat for dinner?"</em></p>
+            </div>
+            <form class="agent-card__form" data-agent="nutritionist">
+              <textarea class="textarea agent-card__input" rows="2" placeholder="Ask for food advice..."></textarea>
+              <button class="button button--sm" type="submit">Ask</button>
+            </form>
+          </section>
+
+          <!-- Trainer -->
+          <section class="agent-card agent-card--trainer" data-agent="trainer">
+            <header class="agent-card__head">
+              <span class="agent-card__icon">💪</span>
+              <div>
+                <h3 class="agent-card__name">Trainer</h3>
+                <p class="agent-card__role">Workouts that respect your injuries & recent load.</p>
+              </div>
+              <span class="agent-card__badge" id="memCount-trainer">0</span>
+            </header>
+            <div class="agent-card__chat" id="chat-trainer">
+              <p class="placeholder agent-card__hint">Try: <em>"What workout should I do tomorrow?"</em></p>
+            </div>
+            <form class="agent-card__form" data-agent="trainer">
+              <textarea class="textarea agent-card__input" rows="2" placeholder="Ask for a plan..."></textarea>
+              <button class="button button--sm" type="submit">Plan</button>
+            </form>
+          </section>
+        </div>
+
+        <section class="shared-memory">
+          <header class="shared-memory__head">
+            <h3>Shared Memory <span class="shared-memory__count" id="sharedMemCount">0</span></h3>
+            <p class="shared-memory__sub">Memories light up <span class="legend-pill legend-pill--write">when written</span> and <span class="legend-pill legend-pill--read">when an agent reads them</span> in its last reply.</p>
+          </header>
+          <div class="shared-memory__list" id="sharedMemoryList">
+            <p class="placeholder">No memories yet. Log something via the Logger to populate the shared pool.</p>
           </div>
         </section>
       </div>

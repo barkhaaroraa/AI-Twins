@@ -35,6 +35,7 @@ document.addEventListener("DOMContentLoaded", () => {
       if (tab.dataset.tab === "graph") loadGraph();
       if (tab.dataset.tab === "timeline") loadTimeline();
       if (tab.dataset.tab === "consolidation") loadTopics();
+      if (tab.dataset.tab === "agents") refreshSharedMemory();
       refreshStats();
     });
   });
@@ -96,12 +97,41 @@ document.addEventListener("DOMContentLoaded", () => {
       const data = await res.json();
       appendMessage("ai", data.response || "No response.");
       renderTrace(data.retrieval_trace);
-      renderUpdates(data.memory_updates);
+
+      // Show previous background results if available, otherwise show "processing"
+      if (data.memory_updates && data.memory_updates.status === "processing") {
+        updatesEl.innerHTML = '<p class="placeholder">Memory processing in background...</p>';
+        pollForUpdates(userId);
+      } else {
+        renderUpdates(data.memory_updates);
+      }
       refreshStats();
     } catch (err) {
       appendMessage("ai", "Error: " + err.message);
     }
   });
+
+  // ------------------------------------------------------------------
+  // Poll for background memory updates
+  // ------------------------------------------------------------------
+  function pollForUpdates(userId, attempt = 0) {
+    if (attempt > 15) {
+      updatesEl.innerHTML = '<p class="placeholder">Background processing timed out.</p>';
+      return;
+    }
+    setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/memory-updates/${userId}`);
+        const data = await res.json();
+        if (data.ready) {
+          renderUpdates(data.updates);
+          refreshStats();
+        } else {
+          pollForUpdates(userId, attempt + 1);
+        }
+      } catch { pollForUpdates(userId, attempt + 1); }
+    }, 1500);
+  }
 
   // ------------------------------------------------------------------
   // Retrieval Trace
@@ -198,37 +228,76 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  function ensureLegend() {
+    if (graphContainer.querySelector(".graph-legend")) return;
+    const legend = document.createElement("div");
+    legend.className = "graph-legend";
+    const items = [
+      ["Semantic", TYPE_COLORS.Semantic],
+      ["Episodic", TYPE_COLORS.Episodic],
+      ["Procedural", TYPE_COLORS.Procedural],
+      ["Preference", TYPE_COLORS.Preference],
+      ["Consolidated", TYPE_COLORS.consolidated],
+    ];
+    legend.innerHTML = items
+      .map(([n, c]) => `<span><span class="dot" style="background:${c}"></span>${n}</span>`)
+      .join("");
+    graphContainer.appendChild(legend);
+  }
+
   function renderGraph(data) {
+    graphContainer.innerHTML = "";
     if (!data.nodes || data.nodes.length === 0) {
       graphContainer.innerHTML = '<p class="placeholder" style="padding:2rem">No memory nodes yet. Chat to build the graph.</p>';
       return;
     }
+    ensureLegend();
 
-    const nodes = data.nodes.map(n => ({
-      id: n.id,
-      label: n.label,
-      color: {
-        background: TYPE_COLORS[n.type] || "#57d9ff",
-        border: TYPE_COLORS[n.type] || "#57d9ff",
-        highlight: { background: "#fff", border: TYPE_COLORS[n.type] || "#57d9ff" },
-      },
-      size: 12 + (n.importance || 0.5) * 20,
-      font: { color: "#e8e8f2", size: 11 },
-      title: `${n.type}: ${n.label}\nConfidence: ${n.confidence?.toFixed(2)}\nImportance: ${n.importance?.toFixed(2)}`,
-      _raw: n,
-    }));
+    const nodes = data.nodes.map(n => {
+      const baseColor = TYPE_COLORS[n.type] || "#57d9ff";
+      const truncated = (n.label || "").length > 36
+        ? (n.label || "").slice(0, 36) + "…"
+        : (n.label || "(no summary)");
+      return {
+        id: n.id,
+        label: truncated,
+        shape: "dot",
+        size: 14 + (n.importance || 0.5) * 22,
+        color: {
+          background: baseColor,
+          border: "#ffffff",
+          highlight: { background: "#fff", border: baseColor },
+          hover: { background: "#fff", border: baseColor },
+        },
+        borderWidth: 2,
+        font: {
+          color: "#ffffff",
+          size: 13,
+          face: "system-ui, sans-serif",
+          strokeWidth: 3,
+          strokeColor: "#0b0d16",
+          vadjust: -2,
+        },
+        title: `${n.type}\n${n.label}\nConfidence: ${(n.confidence ?? 0).toFixed(2)}\nImportance: ${(n.importance ?? 0).toFixed(2)}`,
+        _raw: n,
+      };
+    });
 
     const edges = data.edges.map((e, i) => {
       const style = EDGE_STYLES[e.relation] || EDGE_STYLES.related_to;
+      const baseColor = (style.color || "rgba(255,255,255,0.45)").replace(/0\.\d+\)/, "0.85)");
       return {
         id: i,
         from: e.from,
         to: e.to,
-        color: { color: style.color, opacity: 0.6 },
-        dashes: style.dashes,
-        arrows: e.relation === "temporal_next" ? "to" : undefined,
-        title: `${e.relation} (${e.weight?.toFixed(2)})`,
-        width: 1 + (e.weight || 0.5),
+        color: { color: baseColor, highlight: "#ffffff", hover: "#ffffff", opacity: 0.85 },
+        dashes: style.dashes || false,
+        arrows: e.relation === "temporal_next"
+          ? { to: { enabled: true, scaleFactor: 0.6 } }
+          : undefined,
+        title: `${e.relation} (${(e.weight ?? 0).toFixed(2)})`,
+        width: 1.5 + (e.weight || 0.5) * 2,
+        smooth: { enabled: true, type: "dynamic" },
       };
     });
 
@@ -238,22 +307,47 @@ document.addEventListener("DOMContentLoaded", () => {
     };
 
     const options = {
+      autoResize: false,
+      width: "100%",
+      height: "620px",
+      nodes: { shadow: { enabled: true, color: "rgba(0,0,0,0.4)", size: 8 } },
+      edges: { selectionWidth: 2 },
       physics: {
-        solver: "barnesHut",
-        barnesHut: { gravitationalConstant: -3000, springLength: 120 },
-        stabilization: { iterations: 100 },
+        enabled: true,
+        solver: "forceAtlas2Based",
+        forceAtlas2Based: {
+          gravitationalConstant: -55,
+          centralGravity: 0.012,
+          springLength: 160,
+          springConstant: 0.08,
+          damping: 0.5,
+          avoidOverlap: 0.6,
+        },
+        stabilization: { enabled: true, iterations: 250, fit: true },
       },
-      interaction: { hover: true, tooltipDelay: 200 },
+      interaction: {
+        hover: true,
+        tooltipDelay: 150,
+        navigationButtons: true,
+        keyboard: true,
+        zoomView: true,
+        dragView: true,
+      },
       layout: { improvedLayout: true },
     };
 
     if (visNetwork) visNetwork.destroy();
     visNetwork = new vis.Network(graphContainer, visData, options);
 
+    visNetwork.once("stabilizationIterationsDone", () => {
+      visNetwork.fit({ animation: { duration: 400, easingFunction: "easeInOutQuad" } });
+      // Freeze physics after stabilizing so the graph doesn't drift.
+      visNetwork.setOptions({ physics: { enabled: false } });
+    });
+
     visNetwork.on("click", (params) => {
       if (params.nodes.length > 0) {
-        const nodeId = params.nodes[0];
-        loadInspector(nodeId);
+        loadInspector(params.nodes[0]);
       }
     });
   }
@@ -462,4 +556,181 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Initial stats load
   refreshStats();
+
+  // ------------------------------------------------------------------
+  // Agents tab — 3 agents, shared memory pool
+  // ------------------------------------------------------------------
+  const agentsUserIdEl = document.getElementById("agentsUserId");
+  const agentsRefreshBtn = document.getElementById("agentsRefresh");
+  const agentsResetBtn = document.getElementById("agentsResetMemory");
+  const sharedMemListEl = document.getElementById("sharedMemoryList");
+  const sharedMemCountEl = document.getElementById("sharedMemCount");
+
+  function getAgentsUserId() {
+    return (agentsUserIdEl?.value || "demo_health").trim() || "demo_health";
+  }
+
+  function appendAgentMessage(agent, role, text, opts = {}) {
+    const wrap = document.getElementById(`chat-${agent}`);
+    if (!wrap) return null;
+    const placeholder = wrap.querySelector(".placeholder");
+    if (placeholder) placeholder.remove();
+
+    const el = document.createElement("div");
+    el.className = `agent-msg agent-msg--${role}`;
+    if (opts.loading) {
+      el.classList.add("agent-msg--loading");
+      el.textContent = "Thinking…";
+    } else {
+      el.textContent = text;
+    }
+    wrap.appendChild(el);
+    wrap.scrollTop = wrap.scrollHeight;
+    return el;
+  }
+
+  function appendAgentMeta(agent, html) {
+    const wrap = document.getElementById(`chat-${agent}`);
+    if (!wrap) return;
+    const el = document.createElement("div");
+    el.className = "agent-msg agent-msg--meta";
+    el.innerHTML = html;
+    wrap.appendChild(el);
+    wrap.scrollTop = wrap.scrollHeight;
+  }
+
+  async function sendToAgent(agent, message) {
+    const userId = getAgentsUserId();
+    const form = document.querySelector(`.agent-card__form[data-agent="${agent}"]`);
+    const btn = form?.querySelector("button");
+    const ta = form?.querySelector("textarea");
+    if (btn) btn.disabled = true;
+
+    appendAgentMessage(agent, "user", message);
+    const loadingEl = appendAgentMessage(agent, "ai", "", { loading: true });
+
+    try {
+      const res = await fetch(`/agent/${agent}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: userId, message }),
+      });
+      const data = await res.json();
+
+      if (loadingEl) loadingEl.remove();
+      appendAgentMessage(agent, "ai", data.response || "(no response)");
+
+      const usedIds = (data.memory_used || [])
+        .map(m => m.memory_id)
+        .filter(Boolean);
+
+      // Meta line: how many memories were pulled into context
+      const usedCount = usedIds.length;
+      const memSummary = usedCount
+        ? `<span class="read-tag">read ${usedCount} shared memor${usedCount === 1 ? "y" : "ies"}</span> from the pool`
+        : `no shared memories matched this query`;
+      appendAgentMeta(agent, memSummary);
+
+      // Update count badge for this agent
+      pulseAgentBadge(agent, usedCount);
+
+      // Refresh shared memory feed and highlight reads/writes
+      await refreshSharedMemory({ readIds: usedIds, readBy: agent });
+    } catch (err) {
+      if (loadingEl) loadingEl.remove();
+      appendAgentMessage(agent, "ai", "Error: " + err.message);
+    } finally {
+      if (btn) btn.disabled = false;
+      if (ta) { ta.value = ""; ta.focus(); }
+    }
+  }
+
+  function pulseAgentBadge(agent, count) {
+    const badge = document.getElementById(`memCount-${agent}`);
+    if (!badge) return;
+    badge.textContent = count;
+    badge.dataset.pulse = "0";
+    // restart animation
+    void badge.offsetWidth;
+    badge.dataset.pulse = "1";
+  }
+
+  // Wire each agent form
+  document.querySelectorAll(".agent-card__form").forEach(form => {
+    const agent = form.dataset.agent;
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const ta = form.querySelector("textarea");
+      const msg = (ta?.value || "").trim();
+      if (!msg) return;
+      sendToAgent(agent, msg);
+    });
+  });
+
+  let lastKnownIds = new Set();
+
+  async function refreshSharedMemory(opts = {}) {
+    const { readIds = [], readBy = null } = opts;
+    const userId = getAgentsUserId();
+    if (!sharedMemListEl) return;
+
+    let memories = [];
+    try {
+      const res = await fetch(`/api/agent-memories/${userId}`);
+      const data = await res.json();
+      memories = data.memories || [];
+    } catch (err) {
+      sharedMemListEl.innerHTML = `<p class="placeholder">Error loading memory: ${err.message}</p>`;
+      return;
+    }
+
+    if (!memories.length) {
+      sharedMemListEl.innerHTML = '<p class="placeholder">No memories yet. Log something via the Logger to populate the shared pool.</p>';
+      sharedMemCountEl.textContent = "0";
+      lastKnownIds = new Set();
+      return;
+    }
+
+    const newIds = new Set(memories.map(m => m.id));
+    const justWritten = [...newIds].filter(id => !lastKnownIds.has(id));
+    sharedMemCountEl.textContent = String(memories.length);
+
+    sharedMemListEl.innerHTML = memories.map(m => {
+      const src = m.source_agent || "null";
+      const justNew = justWritten.includes(m.id) ? "mem-pill--just-written" : "";
+      const justRead = readIds.includes(m.id) ? "mem-pill--just-read" : "";
+      const readBadge = readIds.includes(m.id) && readBy
+        ? `<span class="mem-pill__read-by">read by ${readBy}</span>`
+        : "";
+      const ents = (m.entities || []).slice(0, 5).map(
+        e => `<span class="entity-pill">${escapeHtml(e)}</span>`
+      ).join(" ");
+      const srcLabel = m.source_agent
+        ? m.source_agent
+        : "system";
+      return `
+        <div class="mem-pill ${justNew} ${justRead}" data-source="${src}" data-id="${m.id}">
+          ${readBadge}
+          <div class="mem-pill__src">${escapeHtml(srcLabel)}<span class="mem-pill__type">· ${escapeHtml(m.memory_type || "Semantic")}</span></div>
+          <div>${escapeHtml(m.summary || "")}</div>
+          ${ents ? `<div class="mem-pill__entities">${ents}</div>` : ""}
+        </div>
+      `;
+    }).join("");
+
+    lastKnownIds = newIds;
+  }
+
+  agentsRefreshBtn?.addEventListener("click", () => refreshSharedMemory());
+  agentsResetBtn?.addEventListener("click", () => {
+    const fresh = `demo_fresh_${Math.floor(Math.random() * 9000) + 1000}`;
+    agentsUserIdEl.value = fresh;
+    ["logger","nutritionist","trainer"].forEach(a => {
+      const wrap = document.getElementById(`chat-${a}`);
+      if (wrap) wrap.innerHTML = `<p class="placeholder agent-card__hint">Empty memory — try the same question and compare.</p>`;
+      const badge = document.getElementById(`memCount-${a}`);
+      if (badge) badge.textContent = "0";
+    });
+    refreshSharedMemory();
+  });
 });
