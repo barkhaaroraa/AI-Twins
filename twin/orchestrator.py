@@ -1,16 +1,26 @@
 import logging
-import threading
-from typing import Optional
+from concurrent.futures import ThreadPoolExecutor
+from typing import List
 
 from app.agents import AGENTS, AgentSpec
+from app.cognition.cascade import cascade, reflect
+from app.cognition.consolidator.light import mark_request
 from app.db.mongo import create_user_if_not_exists, get_user
 from app.llm.ollama_client import OllamaUnavailable, generate_response
+from app.memory.backing import append_event, attach_produced_memory
 from app.memory.memory_updater import update_memory
 from app.memory.summarizer import fast_store_payload, summarize_memory
-from app.memory.vector import init_vector_collection, search_memory
+from app.memory.vector import init_vector_collection
 from twin.prompt_builder import PromptBuilder
 
 log = logging.getLogger(__name__)
+
+# Shared pool for off-critical-path work (reflect + memory write). Bounded so the process
+# can't accumulate hundreds of threads under burst load. Daemon=True so test/dev shutdown
+# isn't blocked by in-flight tail work.
+_TAIL_POOL = ThreadPoolExecutor(
+    max_workers=8, thread_name_prefix="orchestrator-tail",
+)
 
 
 class TwinOrchestrator:
@@ -31,9 +41,19 @@ class TwinOrchestrator:
         return self._process(user_id, message, spec)
 
     def _process(self, user_id: str, message: str, agent: AgentSpec) -> dict:
+        mark_request()  # bumps the idle timer; light consolidator stays asleep while busy
         create_user_if_not_exists(user_id)
 
-        retrieved = search_memory(user_id, message, limit=4)
+        # Backing-store first (every event recorded).
+        event_id = append_event(
+            user_id=user_id,
+            agent_name=agent.name,
+            event_type="user_message",
+            payload={"message": message},
+        )
+
+        # 6-stage cascade (ACL applied at Stage 5; vector seed also has native ACL filter).
+        retrieved = cascade(message, user_id, agent.name, top_n=4)
 
         user = get_user(user_id) or {}
         prompt = self.prompt_builder.build_prompt(
@@ -58,24 +78,36 @@ class TwinOrchestrator:
             ollama_error = str(e)
             response = "Something went wrong generating a reply, but your message was processed."
 
-        threading.Thread(
-            target=self._store_memory,
-            args=(user_id, message, agent.name, agent.force_store),
-            daemon=True,
-        ).start()
+        # Stage 6: reflect off the critical path.
+        used_ids: List[str] = [m["memory_id"] for m in retrieved]
+        _TAIL_POOL.submit(self._safe_reflect, used_ids, user_id, agent.name, message)
+
+        # Async write tail.
+        _TAIL_POOL.submit(
+            self._store_memory,
+            user_id, message, agent.name, agent.force_store, event_id,
+        )
 
         out = {
             "response": response,
             "memory_used": retrieved,
             "agent": agent.name,
+            "event_id": event_id,
         }
         if ollama_error:
             out["error"] = ollama_error
         return out
 
     @staticmethod
+    def _safe_reflect(used_ids, user_id, agent_name, message):
+        try:
+            reflect(used_ids, user_id, agent_name, message)
+        except Exception:
+            log.exception("reflect failed")
+
+    @staticmethod
     def _store_memory(
-        user_id: str, message: str, source_agent: str, force_store: bool
+        user_id: str, message: str, source_agent: str, force_store: bool, event_id: str
     ):
         try:
             summarized = None
@@ -84,8 +116,20 @@ class TwinOrchestrator:
             except Exception:
                 log.exception("summarize_memory failed; using fast payload")
             if not summarized and force_store:
-                summarized = fast_store_payload(message)
-            if summarized:
-                update_memory(user_id, summarized, source_agent=source_agent)
+                # logger is the only force_store agent: it captures body-state log entries
+                # ("ran 5k this morning", "ate eggs at 9am") which are episodic facts, not
+                # generic Semantic memories.
+                summarized = fast_store_payload(
+                    message, intent="fact", memory_type="Episodic", importance=0.6,
+                )
+            if not summarized:
+                return
+            doc = update_memory(
+                user_id, summarized,
+                source_agent=source_agent,
+                source_event_id=event_id,
+            )
+            if doc:
+                attach_produced_memory(event_id, doc["_id"])
         except Exception:
             log.exception("Background memory work failed for user %s", user_id)

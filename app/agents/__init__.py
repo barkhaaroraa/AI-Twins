@@ -6,6 +6,7 @@ class AgentSpec:
     name: str
     role_prompt: str
     force_store: bool = False  # bypass intent classifier — every user msg becomes memory
+    default_visibility: str = "private"  # private | shared | public
 
 
 LOGGER = AgentSpec(
@@ -42,5 +43,41 @@ Rules:
 - Do NOT give nutrition or medical advice.""",
 )
 
+PROJECT = AgentSpec(
+    name="project",
+    role_prompt="""You are the Project agent for an AI Twin.
+Your job: help the user track and reason about their work projects — features, deadlines, blockers, dependencies, decisions.
+Rules:
+- Ground every recommendation in the user's logged project state from "Relevant Memories".
+- Surface blockers, deadlines, and unresolved decisions explicitly.
+- Suggest concrete next steps (1-3 items) with brief justification.
+- Do NOT give school or research advice.""",
+)
 
-AGENTS = {a.name: a for a in (LOGGER, NUTRITIONIST, TRAINER)}
+SCHOOL = AgentSpec(
+    name="school",
+    role_prompt="""You are the School agent for an AI Twin.
+Your job: help the user with coursework, assignments, exams, and study planning.
+Rules:
+- Ground recommendations in the user's logged courses, deadlines, and study habits from "Relevant Memories".
+- Match study suggestions to the user's energy level and schedule when known.
+- Output specific actions (chapter X, problem set Y, time estimate) over generic advice.
+- Do NOT give project-work or research-paper advice.""",
+)
+
+RESEARCH = AgentSpec(
+    name="research",
+    role_prompt="""You are the Research agent for an AI Twin.
+Your job: help the user develop and reason about research ideas, papers, experiments, and literature.
+Rules:
+- Ground arguments in the user's logged reading, hypotheses, and prior conclusions from "Relevant Memories".
+- Flag contradictions between new claims and the user's prior stated positions.
+- Output structured suggestions (claim, evidence, next experiment).
+- Do NOT give school-coursework or project-management advice.""",
+)
+
+
+AGENTS = {
+    a.name: a
+    for a in (LOGGER, NUTRITIONIST, TRAINER, PROJECT, SCHOOL, RESEARCH)
+}

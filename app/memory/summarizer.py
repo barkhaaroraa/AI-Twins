@@ -1,5 +1,7 @@
 import re
 from typing import Optional, Dict, List
+
+from app.cognition.ner import extract_entities
 from app.llm.ollama_client import generate_json
 
 
@@ -71,7 +73,7 @@ def fast_store_payload(
         "intent": intent,
         "memory_type": memory_type,
         "summary": summary,
-        "entities": _extract_entities(user_message),
+        "entities": extract_entities(user_message),
         "relationships": [],
         "confidence": 0.6,
         "importance": importance,
@@ -127,12 +129,24 @@ def _llm_extract(user_message: str) -> Optional[Dict]:
         if len(summary) > MAX_SUMMARY_LENGTH:
             summary = summary[:MAX_SUMMARY_LENGTH] + "..."
 
+        # Normalize LLM output (which is a list of strings) into the {name, kind} shape
+        # used by the graph projection and read-side entity seed.
+        raw_ents = result.get("entities", []) or []
+        norm_ents = [
+            {"name": str(e), "kind": "topic"} if not isinstance(e, dict) else {
+                "name": str(e.get("name", "")).strip(),
+                "kind": str(e.get("kind", "topic")),
+            }
+            for e in raw_ents
+        ]
+        norm_ents = [e for e in norm_ents if e["name"]]
+
         return {
             "type": intent,
             "intent": intent,
             "memory_type": result.get("memory_type", default_type),
             "summary": summary,
-            "entities": result.get("entities", []),
+            "entities": norm_ents,
             "relationships": result.get("relationships", []),
             "confidence": float(result.get("confidence", 0.8)),
             "importance": float(result.get("importance", default_imp)),
@@ -154,13 +168,12 @@ def _rule_based_extract(user_message: str) -> Optional[Dict]:
             summary = _clean_summary(user_message, intent)
             if not summary:
                 continue
-            entities = _extract_entities(user_message)
             return {
                 "type": intent,
                 "intent": intent,
                 "memory_type": default_type,
                 "summary": summary[:MAX_SUMMARY_LENGTH],
-                "entities": entities,
+                "entities": extract_entities(user_message),
                 "relationships": [],
                 "confidence": 0.6,
                 "importance": default_imp,
@@ -185,36 +198,3 @@ def _clean_summary(text: str, intent: str) -> str:
             result = result[len(prefix):].strip()
             break
     return result.strip()
-
-
-def _extract_entities(text: str) -> List[str]:
-    """Simple entity extraction: capitalized words, quoted strings, technical terms."""
-    entities = set()
-
-    # Quoted strings
-    for match in re.finditer(r'"([^"]+)"', text):
-        entities.add(match.group(1))
-    for match in re.finditer(r"'([^']+)'", text):
-        entities.add(match.group(1))
-
-    # Capitalized multi-word names (e.g. "Machine Learning", "FastAPI")
-    for match in re.finditer(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b", text):
-        word = match.group(1)
-        # Skip sentence-starting words by checking position
-        if match.start() > 0 and text[match.start() - 1] not in ".!?\n":
-            entities.add(word)
-
-    # Technical terms (camelCase, PascalCase, contains digits/special)
-    for match in re.finditer(r"\b([A-Za-z]+[A-Z][a-z]+[A-Za-z]*)\b", text):
-        entities.add(match.group(1))
-
-    # Known tech patterns
-    for match in re.finditer(
-        r"\b(Python|JavaScript|TypeScript|Rust|Go|Java|C\+\+|React|Vue|Angular|"
-        r"FastAPI|Django|Flask|Node\.?js|PyTorch|TensorFlow|MongoDB|PostgreSQL|"
-        r"Docker|Kubernetes|AWS|GCP|Azure|Redis|GraphQL|REST)\b",
-        text, re.I,
-    ):
-        entities.add(match.group(1))
-
-    return list(entities)

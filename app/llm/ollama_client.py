@@ -1,6 +1,8 @@
 import json
 import re
+
 import requests
+
 from app.config import OLLAMA_URL, OLLAMA_MODEL
 
 
@@ -34,4 +36,11 @@ def generate_response(prompt: str, timeout: int = 180) -> str:
 def generate_json(prompt: str, timeout: int = 90) -> dict:
     raw = generate_response(prompt, timeout=timeout)
     cleaned = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`")
-    return json.loads(cleaned)
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        # Small models often add prose around the JSON; salvage the first {...} block.
+        match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
+        if match:
+            return json.loads(match.group(0))
+        raise

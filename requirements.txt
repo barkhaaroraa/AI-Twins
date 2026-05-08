@@ -7,3 +7,7 @@ requests==2.33.1
 pymongo==4.17.0
 qdrant-client==1.17.1
 sentence-transformers==5.4.1
+neo4j==5.28.1
+apscheduler==3.11.0
+python-ulid==3.0.0
+numpy==2.2.1
